@@ -85,17 +85,14 @@ if is_torch_available():
                 input_ids = input_ids.to(torch.int32)
             return self.model(input_ids=input_ids, **kwargs)
 
-        def __getattribute__(self, name):
-            # For 'model' attribute, return it directly to avoid recursion
-            if name == 'model':
-                return object.__getattribute__(self, 'model')
-            # For other attributes, try to get them from the wrapped model first
+        def __getattr__(self, name):
+            # Defer to torch.nn.Module's own resolution first (parameters, buffers, submodules, etc.).
             try:
-                return object.__getattribute__(self.model, name)
+                return super().__getattr__(name)
             except AttributeError:
-                # If not found on model, try to get from self
+                # If not found on this wrapper, fall back to the underlying model.
                 try:
-                    return object.__getattribute__(self, name)
+                    return getattr(self.model, name)
                 except AttributeError:
                     raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
