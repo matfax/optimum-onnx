@@ -85,12 +85,19 @@ if is_torch_available():
                 input_ids = input_ids.to(torch.int32)
             return self.model(input_ids=input_ids, **kwargs)
 
-        def __getattr__(self, name):
-            # Delegate attribute access to the wrapped model
+        def __getattribute__(self, name):
+            # For 'model' attribute, return it directly to avoid recursion
+            if name == 'model':
+                return object.__getattribute__(self, 'model')
+            # For other attributes, try to get them from the wrapped model first
             try:
                 return object.__getattribute__(self.model, name)
             except AttributeError:
-                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+                # If not found on model, try to get from self
+                try:
+                    return object.__getattribute__(self, name)
+                except AttributeError:
+                    raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
