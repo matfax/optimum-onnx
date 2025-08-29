@@ -87,7 +87,9 @@ if is_torch_available():
 
         def __getattr__(self, name):
             # Delegate attribute access to the wrapped model
-            return getattr(self.model, name)
+            if hasattr(self.model, name):
+                return getattr(self.model, name)
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
