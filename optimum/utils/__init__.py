@@ -16,6 +16,14 @@
 
 import logging
 
+# Import utility functions
+from .import_utils import (
+    is_torch_available,
+    is_onnx_available, 
+    is_onnxruntime_available,
+    is_transformers_version,
+)
+
 # Logging
 def get_logger(name):
     return logging.getLogger(name)
