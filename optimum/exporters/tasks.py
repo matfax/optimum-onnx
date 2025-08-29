@@ -15,7 +15,6 @@
 """Tasks manager for ONNX exports."""
 
 from typing import Dict, Any, Optional
-from functools import partial
 
 
 class TasksManager:
@@ -139,10 +138,12 @@ class TasksManager:
     @staticmethod
     def get_exporter_config_constructor(exporter: str, model_type: str, task: str, **kwargs):
         """Get the config constructor for the given exporter, model type and task."""
-        # This would normally return the appropriate config class
-        # For now, return a dummy that creates a basic config
-        from optimum.exporters.onnx.base import OnnxConfig
-        return partial(OnnxConfig, task=task)
+        # Return a lambda that does the import only when called to avoid circular imports
+        def config_constructor(*args, **constructor_kwargs):
+            # Import here to avoid circular dependency
+            from optimum.exporters.onnx.base import OnnxConfig
+            return OnnxConfig(*args, task=task, **constructor_kwargs)
+        return config_constructor
     
     @staticmethod
     def create_register(exporter: str, overwrite_existing: bool = False):
