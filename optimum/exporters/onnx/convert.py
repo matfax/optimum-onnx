@@ -88,18 +88,17 @@ if is_torch_available():
             - model({"input_ids": tensor, ...})  # single positional dict
             - model(tensor, ...)  # input_ids as first positional arg
             """
-            # 1) If a single positional dict is passed, merge into kwargs.
-            if len(args) == 1 and isinstance(args[0], dict):
-                merged = dict(args[0])
-                merged.update(kwargs)
-                # Convert inside the merged kwargs
-                input_tensor = merged.get("input_ids", None)
+            new_args = list(args)
+
+            # 1) If first positional arg is a dict (common for patched forwards), convert in-place and keep positional call.
+            if len(new_args) > 0 and isinstance(new_args[0], dict):
+                d = dict(new_args[0])
+                input_tensor = d.get("input_ids", None)
                 if isinstance(input_tensor, torch.Tensor) and input_tensor.dtype == torch.long:
-                    merged["input_ids"] = input_tensor.to(torch.int32)
-                return self.model(**merged)
+                    d["input_ids"] = input_tensor.to(torch.int32)
+                new_args[0] = d
 
             # 2) If first positional arg is a tensor for input_ids, convert it.
-            new_args = list(args)
             if len(new_args) > 0 and isinstance(new_args[0], torch.Tensor) and new_args[0].dtype == torch.long:
                 new_args[0] = new_args[0].to(torch.int32)
 
