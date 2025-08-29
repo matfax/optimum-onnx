@@ -85,6 +85,10 @@ if is_torch_available():
                 input_ids = input_ids.to(torch.int32)
             return self.model(input_ids=input_ids, **kwargs)
 
+        def __getattr__(self, name):
+            # Delegate attribute access to the wrapped model
+            return getattr(self.model, name)
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
