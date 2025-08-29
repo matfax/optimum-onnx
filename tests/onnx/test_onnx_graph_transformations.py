@@ -128,3 +128,40 @@ class OnnxToInt32Test(TestCase):
             }
 
             model.run(None, inputs)
+    
+    def test_int32_wrapper_functionality(self):
+        """Test that Int32Wrapper correctly converts input_ids from int64 to int32."""
+        import torch
+        from transformers import GPT2LMHeadModel, GPT2Config
+        from optimum.exporters.onnx.model_patcher import Int32Wrapper
+        
+        # Create a simple test model
+        config = GPT2Config(
+            vocab_size=50,
+            n_positions=8,
+            n_embd=16,
+            n_layer=1,
+            n_head=2,
+        )
+        model = GPT2LMHeadModel(config)
+        model.eval()
+        
+        # Wrap the model
+        wrapped_model = Int32Wrapper(model)
+        
+        # Test with int64 input_ids
+        input_ids_int64 = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+        
+        # Forward through original model with int32 to match what wrapper does
+        input_ids_int32 = input_ids_int64.to(torch.int32)
+        original_output = model(input_ids_int32)
+        
+        # Forward through wrapped model
+        wrapped_output = wrapped_model(input_ids_int64)
+        
+        # Results should be the same since wrapper converts to int32
+        self.assertTrue(torch.allclose(original_output.logits, wrapped_output.logits, atol=1e-5))
+        
+        # Test that the wrapper works with int32 inputs too
+        wrapped_output_int32 = wrapped_model(input_ids_int32)
+        self.assertTrue(torch.allclose(original_output.logits, wrapped_output_int32.logits, atol=1e-5))

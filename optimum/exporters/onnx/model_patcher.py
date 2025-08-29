@@ -67,6 +67,23 @@ if TYPE_CHECKING:
 logger = logging.get_logger(__name__)
 
 
+class Int32Wrapper(torch.nn.Module):
+    """Wrapper that converts input_ids from int64 (torch.long) to int32 during ONNX export.
+    
+    This is useful for ONNX models that prefer int32 inputs for better compatibility
+    with certain ONNX runtimes and hardware accelerators.
+    """
+    
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids=None, **kwargs):
+        if input_ids is not None and input_ids.dtype == torch.long:
+            input_ids = input_ids.to(torch.int32)
+        return self.model(input_ids=input_ids, **kwargs)
+
+
 @_onnx_symbolic("aten::__ior_")
 @symbolic_helper.parse_args("v", "v")
 def __ior_(g: jit_utils.GraphContext, self: torch._C.Value, other: torch._C.Value) -> torch._C.Value:
@@ -451,6 +468,13 @@ class ModelPatcher:
         model_kwargs: dict[str, Any] | None = None,
     ):
         self._model = model
+        self._original_model = model  # Keep reference to original model
+        self._int32_wrapper = None
+
+        # Apply Int32Wrapper if configured
+        if getattr(config, "use_int32_inputs", False):
+            self._int32_wrapper = Int32Wrapper(model)
+            self._model = self._int32_wrapper
 
         patching_specs = config.PATCHING_SPECS or []
         patching_specs.extend(UNSUPPORTED_OPS_PATCHING_SPEC)

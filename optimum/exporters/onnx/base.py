@@ -177,12 +177,14 @@ class OnnxConfig(ExporterConfig, ABC):
         int_dtype: str = "int64",
         float_dtype: str = "fp32",
         legacy: bool = False,
+        use_int32_inputs: bool = False,
     ):
         super().__init__(config=config, task=task, int_dtype=int_dtype, float_dtype=float_dtype)
 
         self.variant = "default"
         self._preprocessors = preprocessors
         self.legacy = legacy
+        self.use_int32_inputs = use_int32_inputs
 
     @property
     def variant(self) -> str:
