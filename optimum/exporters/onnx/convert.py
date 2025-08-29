@@ -80,10 +80,35 @@ if is_torch_available():
             super().__init__()
             self.model = model
 
-        def forward(self, input_ids=None, **kwargs):
-            if input_ids is not None and input_ids.dtype == torch.long:
-                input_ids = input_ids.to(torch.int32)
-            return self.model(input_ids=input_ids, **kwargs)
+        def forward(self, *args, **kwargs):
+            """Forward that safely converts input_ids tensors from int64 to int32.
+
+            Handles several call patterns used during export/tracing:
+            - model(input_ids=tensor, ...)
+            - model({"input_ids": tensor, ...})  # single positional dict
+            - model(tensor, ...)  # input_ids as first positional arg
+            """
+            # 1) If a single positional dict is passed, merge into kwargs.
+            if len(args) == 1 and isinstance(args[0], dict):
+                merged = dict(args[0])
+                merged.update(kwargs)
+                # Convert inside the merged kwargs
+                input_tensor = merged.get("input_ids", None)
+                if isinstance(input_tensor, torch.Tensor) and input_tensor.dtype == torch.long:
+                    merged["input_ids"] = input_tensor.to(torch.int32)
+                return self.model(**merged)
+
+            # 2) If first positional arg is a tensor for input_ids, convert it.
+            new_args = list(args)
+            if len(new_args) > 0 and isinstance(new_args[0], torch.Tensor) and new_args[0].dtype == torch.long:
+                new_args[0] = new_args[0].to(torch.int32)
+
+            # 3) If input_ids is in kwargs, convert it.
+            if "input_ids" in kwargs and isinstance(kwargs["input_ids"], torch.Tensor):
+                if kwargs["input_ids"].dtype == torch.long:
+                    kwargs["input_ids"] = kwargs["input_ids"].to(torch.int32)
+
+            return self.model(*tuple(new_args), **kwargs)
 
         def __getattr__(self, name):
             # Defer to torch.nn.Module's own resolution first (parameters, buffers, submodules, etc.).
