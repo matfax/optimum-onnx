@@ -87,9 +87,10 @@ if is_torch_available():
 
         def __getattr__(self, name):
             # Delegate attribute access to the wrapped model
-            if hasattr(self.model, name):
-                return getattr(self.model, name)
-            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+            try:
+                return object.__getattribute__(self.model, name)
+            except AttributeError:
+                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -539,7 +540,9 @@ def export_pytorch(
         model = model.eval()
         
         # Wrap model with Int32Wrapper to convert input_ids from long to int32
-        model = Int32Wrapper(model)
+        # Only wrap if not already wrapped to avoid nested wrappers
+        if not isinstance(model, Int32Wrapper):
+            model = Int32Wrapper(model)
 
         # Check if we need to override certain configuration item
         if config.values_override is not None:
