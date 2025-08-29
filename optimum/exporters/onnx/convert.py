@@ -849,7 +849,19 @@ def export(
         )
 
     if not disable_dynamic_axes_fix:
-        config.fix_dynamic_axes(output, device=device, input_shapes=input_shapes, dtype=dtype)
+        try:
+            config.fix_dynamic_axes(output, device=device, input_shapes=input_shapes, dtype=dtype)
+        except Exception as e:
+            # Fallback to CPU to avoid ORT CUDA kernel/runtime mismatches during dynamic-axes probing.
+            try:
+                logger.warning(
+                    "Dynamic axes fix failed on device '%s' (%s). Retrying on CPU.",
+                    device,
+                    str(e),
+                )
+            except Exception:
+                pass
+            config.fix_dynamic_axes(output, device="cpu", input_shapes=input_shapes, dtype=dtype)
     return export_output
 
 
