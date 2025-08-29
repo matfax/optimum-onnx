@@ -74,6 +74,18 @@ if is_diffusers_available():
     from diffusers import DiffusionPipeline, ModelMixin
 
 
+if is_torch_available():
+    class Int32Wrapper(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, input_ids=None, **kwargs):
+            if input_ids is not None and input_ids.dtype == torch.long:
+                input_ids = input_ids.to(torch.int32)
+            return self.model(input_ids=input_ids, **kwargs)
+
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -519,6 +531,9 @@ def export_pytorch(
     with torch.no_grad():
         model.config.return_dict = True
         model = model.eval()
+        
+        # Wrap model with Int32Wrapper to convert input_ids from long to int32
+        model = Int32Wrapper(model)
 
         # Check if we need to override certain configuration item
         if config.values_override is not None:
