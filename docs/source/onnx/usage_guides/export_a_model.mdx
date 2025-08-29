@@ -417,3 +417,28 @@ main_export(
 ```
 
 Moreover, the advanced argument `fn_get_submodels` to `main_export` allows to customize how the submodels are extracted in case the model needs to be exported in several submodels. Examples of such functions can be [consulted here](link to utils.py relevant code once merged).
+
+## Int32 Input Conversion
+
+Some ONNX runtimes and hardware accelerators work better with int32 inputs rather than int64 inputs. Optimum provides an `Int32Wrapper` that automatically converts `input_ids` from int64 (torch.long) to int32 during export.
+
+To enable int32 input conversion, set `use_int32_inputs=True` in your ONNX configuration:
+
+```python
+from optimum.exporters.onnx.base import OnnxConfig
+
+class MyOnnxConfig(OnnxConfig):
+    def __init__(self, config, task="text-generation", use_int32_inputs=False):
+        super().__init__(
+            config=config, 
+            task=task,
+            use_int32_inputs=use_int32_inputs  # Enable int32 wrapper
+        )
+    
+    # ... rest of your config
+
+# Export with int32 conversion enabled
+onnx_config = MyOnnxConfig(model.config, use_int32_inputs=True)
+```
+
+The `Int32Wrapper` will transparently convert int64 `input_ids` to int32 during the forward pass, ensuring better compatibility with ONNX runtimes that prefer int32 inputs while maintaining the same model behavior.
