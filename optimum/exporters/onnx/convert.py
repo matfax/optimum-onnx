@@ -107,6 +107,59 @@ if is_torch_available():
                 if kwargs["input_ids"].dtype == torch.long:
                     kwargs["input_ids"] = kwargs["input_ids"].to(torch.int32)
 
+            # 4) Auto-create position_ids if underlying model accepts it and it's missing,
+            #    so the ONNX graph can compute it internally and not expose it as an input.
+            try:
+                expects_pos_ids = "position_ids" in signature(self.model.forward).parameters
+            except Exception:
+                expects_pos_ids = False
+
+            def _get_from_all(name):
+                # kwargs takes precedence
+                if name in kwargs and isinstance(kwargs[name], torch.Tensor):
+                    return kwargs[name]
+                # dict in first positional arg
+                if len(new_args) > 0 and isinstance(new_args[0], dict):
+                    val = new_args[0].get(name, None)
+                    if isinstance(val, torch.Tensor):
+                        return val
+                # first positional tensor (for input_ids)
+                if name == "input_ids" and len(new_args) > 0 and isinstance(new_args[0], torch.Tensor):
+                    return new_args[0]
+                return None
+
+            def _set_in_all(name, tensor):
+                if len(new_args) > 0 and isinstance(new_args[0], dict):
+                    d = dict(new_args[0])
+                    d[name] = tensor
+                    new_args[0] = d
+                else:
+                    kwargs[name] = tensor
+
+            pos_already_provided = (
+                ("position_ids" in kwargs and isinstance(kwargs.get("position_ids"), torch.Tensor))
+                or (len(new_args) > 0 and isinstance(new_args[0], dict) and isinstance(new_args[0].get("position_ids"), torch.Tensor))
+            )
+
+            if expects_pos_ids and not pos_already_provided:
+                input_ids_t = _get_from_all("input_ids")
+                attn_mask_t = _get_from_all("attention_mask")
+
+                if isinstance(input_ids_t, torch.Tensor) and input_ids_t.dim() >= 2:
+                    batch = input_ids_t.size(0)
+                    seqlen = input_ids_t.size(1)
+
+                    if isinstance(attn_mask_t, torch.Tensor) and attn_mask_t.dim() == 2 and attn_mask_t.shape[0] == batch and attn_mask_t.shape[1] == seqlen:
+                        # cumulative positions over valid tokens
+                        pos = attn_mask_t.long().cumsum(-1) - 1
+                        pos.clamp_(min=0)
+                    else:
+                        pos = torch.arange(seqlen, dtype=torch.long, device=input_ids_t.device).unsqueeze(0)
+                        if batch > 1:
+                            pos = pos.expand(batch, -1)
+
+                    _set_in_all("position_ids", pos)
+
             return self.model(*tuple(new_args), **kwargs)
 
         def __getattr__(self, name):
@@ -600,9 +653,23 @@ def export_pytorch(
         dummy_inputs = config.rename_ambiguous_inputs(dummy_inputs)
 
         with config.patch_model_for_export(model, model_kwargs=model_kwargs):
+            # If the model type is known to require position_ids for batched generation,
+            # generate it within the traced graph (via Int32Wrapper) and do not expose it as an ONNX input.
+            try:
+                model_type = getattr(model.config, "model_type", None)
+            except Exception:
+                model_type = None
+
+            if model_type in MODEL_TYPES_REQUIRING_POSITION_IDS and "position_ids" in dummy_inputs:
+                # Remove from provided inputs so exporter won't expect it as an input tensor
+                del dummy_inputs["position_ids"]
+
             check_dummy_inputs_are_allowed(model, dummy_inputs)
 
             inputs = config.ordered_inputs(model)
+            # Locally filter out position_ids from ONNX input names for these models
+            if model_type in MODEL_TYPES_REQUIRING_POSITION_IDS and "position_ids" in inputs:
+                inputs = {k: v for k, v in inputs.items() if k != "position_ids"}
             input_names = list(inputs.keys())
             output_names = list(config.outputs.keys())
 
