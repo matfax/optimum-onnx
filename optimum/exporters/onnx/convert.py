@@ -181,6 +181,27 @@ class DynamicAxisNameError(ValueError):
     pass
 
 
+def _apply_model_default_shapes(model, shapes: dict | None) -> dict:
+    """Apply per-model default dummy shapes.
+
+    - For qwen3/qwen3_moe, default to sequence_length=32768 unless user explicitly set a different value.
+    """
+    try:
+        model_type = getattr(model.config, "model_type", None)
+    except Exception:
+        model_type = None
+
+    resolved = {} if shapes is None else dict(shapes)
+
+    if model_type in {"qwen3", "qwen3_moe"}:
+        # If sequence_length not provided or set to the global default (typically 16), bump to 32k.
+        default_seq_len = DEFAULT_DUMMY_SHAPES.get("sequence_length", 16)
+        if "sequence_length" not in resolved or resolved.get("sequence_length") == default_seq_len:
+            resolved["sequence_length"] = 32
+
+    return resolved
+
+
 def validate_models_outputs(
     models_and_onnx_configs: dict[str, tuple[PreTrainedModel | ModelMixin, OnnxConfig]],
     onnx_named_outputs: list[list[str]],
@@ -634,6 +655,9 @@ def export_pytorch(
 
         if input_shapes is None:
             input_shapes = {}  # will use the defaults from DEFAULT_DUMMY_SHAPES
+
+        # Apply per-model default shapes (e.g., qwen3 -> 32 sequence length by default)
+        input_shapes = _apply_model_default_shapes(model, input_shapes)
 
         # Check that inputs match, and order them properly
         dummy_inputs = config.generate_dummy_inputs(framework="pt", **input_shapes)
@@ -1103,6 +1127,9 @@ def onnx_export_from_model(
     # For MODEL_TO_PATCH_FOR_PAST architectures, when exporting the model with an input of sequence length of 1, a tracer that does not handle
     # controlflows will trace incorrectly the mask generation, resulting in incorrect attention masks for other sequence lengthss.
     # Reference: https://github.com/huggingface/transformers/blob/af3de8d87c717c4bb090f037d0d89413c195a42f/src/transformers/modeling_attn_mask_utils.py#L94
+    # Apply per-model default shapes (e.g., qwen3 -> 32 sequence length by default) before resolving `input_shapes`.
+    kwargs_shapes = _apply_model_default_shapes(model, kwargs_shapes)
+
     input_shapes = {}
     for input_name in DEFAULT_DUMMY_SHAPES:
         input_shapes[input_name] = (
