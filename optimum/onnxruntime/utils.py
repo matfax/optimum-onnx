@@ -109,6 +109,7 @@ class ORTConfigManager:
         "whisper": "bart",
         "xlm-roberta": "bert",
         "pix2struct": "vit",
+        "qwen3": "bert",
     }
 
     @classmethod
