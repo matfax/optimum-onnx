@@ -470,6 +470,30 @@ def _run_validation(
             onnx_inputs[name] = value.cpu().numpy()
 
     # Compute outputs from the ONNX model
+    # Ensure numpy dtypes match expected ONNX input types (avoids binding mismatches like position_ids Int64)
+    ort_input_types = {i.name: i.type for i in session.get_inputs()}  # e.g. "tensor(int64)"
+
+    def _to_np_dtype(ort_type: str | None):
+        mapping = {
+            "tensor(int64)": np.int64,
+            "tensor(int32)": np.int32,
+            "tensor(float16)": np.float16,
+            "tensor(float)": np.float32,
+            "tensor(double)": np.float64,
+            "tensor(bfloat16)": np.uint16,  # ORT uses uint16 buffer for bfloat16 in numpy
+            "tensor(bool)": np.bool_,
+        }
+        return mapping.get(ort_type, None)
+
+    for k, v in list(onnx_inputs.items()):
+        expected = _to_np_dtype(ort_input_types.get(k))
+        if expected is not None and isinstance(v, np.ndarray) and v.dtype != expected:
+            try:
+                onnx_inputs[k] = v.astype(expected, copy=False)
+            except Exception:
+                # If casting fails, leave as-is; ORT may still accept compatible types
+                pass
+
     onnx_outputs = session.run(onnx_named_outputs, onnx_inputs)
 
     # Modify the ONNX output names to match the reference model output names
