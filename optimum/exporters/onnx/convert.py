@@ -197,7 +197,7 @@ def _apply_model_default_shapes(model, shapes: dict | None) -> dict:
         # If sequence_length not provided or set to the global default (typically 16), bump to 32k.
         default_seq_len = DEFAULT_DUMMY_SHAPES.get("sequence_length", 16)
         if "sequence_length" not in resolved or resolved.get("sequence_length") == default_seq_len:
-            resolved["sequence_length"] = 32
+            resolved["sequence_length"] = 32768
 
     return resolved
 
@@ -359,6 +359,7 @@ def _run_validation(
     model_kwargs: dict[str, Any] | None = None,
 ):
     from onnxruntime import GraphOptimizationLevel, SessionOptions
+    import onnxruntime as ort
 
     model_kwargs = model_kwargs if model_kwargs is not None else {}
 
@@ -378,13 +379,72 @@ def _run_validation(
     session_options = SessionOptions()
     # We could well set ORT_DISABLE_ALL here, but it makes CUDA export with O4 of gpt_neo fail
     session_options.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_BASIC
+    
+    # Build profile inputs before session creation (needed to assemble EP profile strings)
+    try:
+        onnx_m = onnx.load(onnx_model.as_posix(), load_external_data=False)
+        onnx_input_names_pre = [vi.name for vi in onnx_m.graph.input]
+    except Exception:
+        onnx_input_names_pre = None
 
-    if device.startswith("cuda"):
-        provider = "CUDAExecutionProvider"
+    # Base dummy inputs and ORT-ordered mapping for profiling
+    try:
+        profile_ort_inputs = config.generate_dummy_inputs_for_validation(
+            reference_model_inputs,
+            onnx_input_names=onnx_input_names_pre if onnx_input_names_pre is not None else None,
+        )
+    except Exception:
+        profile_ort_inputs = {}
+
+    # Choose providers; prefer NvTensorRTRTX if available
+    available = set(getattr(ort, "get_available_providers", lambda: [])())
+    providers: list[str] = []
+    provider_options: list[dict] | None = None
+
+    if device.startswith("cuda") and "NvTensorRTRTXExecutionProvider" in available:
+        # Build nv_profile_* strings for token-like 2D inputs
+        def _shape2d(val):
+            try:
+                if hasattr(val, "shape") and len(val.shape) >= 2:
+                    b = max(int(val.shape[0]), 1)
+                    s = max(int(val.shape[1]), 1)
+                    return b, s
+            except Exception:
+                pass
+            return 1, 1
+
+        min_entries, opt_entries, max_entries = [], [], []
+        for name, v in profile_ort_inputs.items():
+            if not hasattr(v, "shape") or len(getattr(v, "shape", ())) != 2:
+                continue
+            ob, os_ = _shape2d(v)
+            # min = 1x1, opt = actual dummy shape, max = opt but with seq capped at 32768
+            min_entries.append(f"{name}:1x1")
+            opt_entries.append(f"{name}:{ob}x{os_}")
+            max_b = ob
+            max_s = os_ if os_ <= 32768 else 32768
+            max_entries.append(f"{name}:{max_b}x{max_s}")
+
+        nv_opts = {
+            "nv_profile_min_shapes": ";".join(min_entries),
+            "nv_profile_opt_shapes": ";".join(opt_entries),
+            "nv_profile_max_shapes": ";".join(max_entries),
+        }
+        # Disable CUDA graph capture on the CUDA EP to avoid capture/reset warnings during validation
+        cuda_opts = {"enable_cuda_graph": "0"}
+
+        providers = ["NvTensorRTRTXExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        provider_options = [nv_opts, cuda_opts, {}]
     else:
-        provider = "CPUExecutionProvider"
+        providers = ["CUDAExecutionProvider"] if device.startswith("cuda") else ["CPUExecutionProvider"]
+        provider_options = None
 
-    session = PickableInferenceSession(onnx_model.as_posix(), sess_options=session_options, providers=[provider])
+    session = PickableInferenceSession(
+        onnx_model.as_posix(),
+        sess_options=session_options,
+        providers=providers,
+        provider_options=provider_options,
+    )
 
     # Sometimes the exported model can have more outputs than what is specified in the ONNX config because the original
     # PyTorch model has more outputs that were forgotten in the config, so we check for that.
