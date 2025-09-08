@@ -21,6 +21,7 @@ import re
 from collections.abc import Sequence
 from enum import Enum
 from inspect import signature
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np

@@ -70,6 +70,8 @@ from optimum.onnxruntime.utils import prepare_providers_and_provider_options
 from optimum.utils.file_utils import find_files_matching_pattern
 from optimum.utils.save_utils import maybe_save_preprocessors
 
+import onnx
+
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig
@@ -376,6 +378,39 @@ class ORTModel(ORTSessionMixin, OptimizedModel):
         providers, provider_options = prepare_providers_and_provider_options(
             provider=provider, providers=providers, provider_options=provider_options
         )
+        
+        # Patch ONNX model to use Int64 inputs if needed for TensorRT/CUDA providers
+        convert_enabled = os.getenv("OPTIMUM_CONVERT_INPUTS_TO_INT64", "1").lower() in ("1", "true", "yes")
+        
+        if convert_enabled and any(p in ["TensorrtExecutionProvider", "CUDAExecutionProvider", "NvTensorRTRTXExecutionProvider"] for p in providers):
+            try:
+                # Generate int64 version path
+                model_path = Path(model_cache_path)
+                int64_path = model_path.parent / f"{model_path.stem}_int64_inputs{model_path.suffix}"
+                
+                # Check if int64 version exists and is newer
+                if not int64_path.exists() or (model_path.exists() and int64_path.stat().st_mtime < model_path.stat().st_mtime):
+                    logger.info(f"Converting ONNX inputs to Int64 for TensorRT compatibility: {int64_path}")
+                    
+                    # Load and patch the model
+                    model = onnx.load(model_cache_path)
+                    
+                    # Convert input types to Int64
+                    for input_spec in model.graph.input:
+                        if input_spec.name in ['input_ids', 'attention_mask', 'position_ids']:
+                            if input_spec.type.tensor_type and input_spec.type.tensor_type.elem_type != 7:
+                                input_spec.type.tensor_type.elem_type = 7  # Int64
+                    
+                    # Save the patched model
+                    onnx.save(model, int64_path.as_posix())
+                    logger.info(f"Successfully converted inputs to Int64: {int64_path}")
+                
+                # Use the int64 version
+                model_cache_path = int64_path.as_posix()
+                
+            except Exception as e:
+                logger.warning(f"Failed to convert inputs to Int64: {e}. Using original model.")
+        
         session = InferenceSession(
             model_cache_path,
             providers=providers,

@@ -66,112 +66,20 @@ from optimum.utils.save_utils import maybe_save_preprocessors
 # TODO : moved back onnx imports applied in https://github.com/huggingface/optimum/pull/2114/files after refactorization
 
 if is_torch_available():
+    import copy
+    import gc
+    import multiprocessing as mp
+    import traceback
+
+    import numpy as np
+    import onnx
     import torch
     import torch.nn as nn
+    from torch.onnx import export as onnx_export
     from transformers.modeling_utils import PreTrainedModel
 
 if is_diffusers_available():
     from diffusers import DiffusionPipeline, ModelMixin
-
-
-if is_torch_available():
-    class Int32Wrapper(torch.nn.Module):
-        def __init__(self, model):
-            super().__init__()
-            self.model = model
-
-        def forward(self, *args, **kwargs):
-            """Forward that safely converts input_ids tensors from int64 to int32.
-
-            Handles several call patterns used during export/tracing:
-            - model(input_ids=tensor, ...)
-            - model({"input_ids": tensor, ...})  # single positional dict
-            - model(tensor, ...)  # input_ids as first positional arg
-            """
-            new_args = list(args)
-
-            # 1) If first positional arg is a dict (common for patched forwards), convert in-place and keep positional call.
-            if len(new_args) > 0 and isinstance(new_args[0], dict):
-                d = dict(new_args[0])
-                input_tensor = d.get("input_ids", None)
-                if isinstance(input_tensor, torch.Tensor) and input_tensor.dtype == torch.long:
-                    d["input_ids"] = input_tensor.to(torch.int32)
-                new_args[0] = d
-
-            # 2) If first positional arg is a tensor for input_ids, convert it.
-            if len(new_args) > 0 and isinstance(new_args[0], torch.Tensor) and new_args[0].dtype == torch.long:
-                new_args[0] = new_args[0].to(torch.int32)
-
-            # 3) If input_ids is in kwargs, convert it.
-            if "input_ids" in kwargs and isinstance(kwargs["input_ids"], torch.Tensor):
-                if kwargs["input_ids"].dtype == torch.long:
-                    kwargs["input_ids"] = kwargs["input_ids"].to(torch.int32)
-
-            # 4) Auto-create position_ids if underlying model accepts it and it's missing,
-            #    so the ONNX graph can compute it internally and not expose it as an input.
-            try:
-                expects_pos_ids = "position_ids" in signature(self.model.forward).parameters
-            except Exception:
-                expects_pos_ids = False
-
-            def _get_from_all(name):
-                # kwargs takes precedence
-                if name in kwargs and isinstance(kwargs[name], torch.Tensor):
-                    return kwargs[name]
-                # dict in first positional arg
-                if len(new_args) > 0 and isinstance(new_args[0], dict):
-                    val = new_args[0].get(name, None)
-                    if isinstance(val, torch.Tensor):
-                        return val
-                # first positional tensor (for input_ids)
-                if name == "input_ids" and len(new_args) > 0 and isinstance(new_args[0], torch.Tensor):
-                    return new_args[0]
-                return None
-
-            def _set_in_all(name, tensor):
-                if len(new_args) > 0 and isinstance(new_args[0], dict):
-                    d = dict(new_args[0])
-                    d[name] = tensor
-                    new_args[0] = d
-                else:
-                    kwargs[name] = tensor
-
-            pos_already_provided = (
-                ("position_ids" in kwargs and isinstance(kwargs.get("position_ids"), torch.Tensor))
-                or (len(new_args) > 0 and isinstance(new_args[0], dict) and isinstance(new_args[0].get("position_ids"), torch.Tensor))
-            )
-
-            if expects_pos_ids and not pos_already_provided:
-                input_ids_t = _get_from_all("input_ids")
-                attn_mask_t = _get_from_all("attention_mask")
-
-                if isinstance(input_ids_t, torch.Tensor) and input_ids_t.dim() >= 2:
-                    batch = input_ids_t.size(0)
-                    seqlen = input_ids_t.size(1)
-
-                    if isinstance(attn_mask_t, torch.Tensor) and attn_mask_t.dim() == 2 and attn_mask_t.shape[0] == batch and attn_mask_t.shape[1] == seqlen:
-                        # cumulative positions over valid tokens
-                        pos = attn_mask_t.long().cumsum(-1) - 1
-                        pos.clamp_(min=0)
-                    else:
-                        pos = torch.arange(seqlen, dtype=torch.long, device=input_ids_t.device).unsqueeze(0)
-                        if batch > 1:
-                            pos = pos.expand(batch, -1)
-
-                    _set_in_all("position_ids", pos)
-
-            return self.model(*tuple(new_args), **kwargs)
-
-        def __getattr__(self, name):
-            # Defer to torch.nn.Module's own resolution first (parameters, buffers, submodules, etc.).
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                # If not found on this wrapper, fall back to the underlying model.
-                try:
-                    return getattr(self.model, name)
-                except AttributeError:
-                    raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -724,11 +632,6 @@ def export_pytorch(
     with torch.no_grad():
         model.config.return_dict = True
         model = model.eval()
-        
-        # Wrap model with Int32Wrapper to convert input_ids from long to int32
-        # Only wrap if not already wrapped to avoid nested wrappers
-        if not isinstance(model, Int32Wrapper):
-            model = Int32Wrapper(model)
 
         # Check if we need to override certain configuration item
         if config.values_override is not None:

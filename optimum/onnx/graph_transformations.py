@@ -308,6 +308,9 @@ def merge_decoders(
     return merged_model
 
 
+    return model
+
+
 def cast_slice_nodes_inputs_to_int32(model: onnx.ModelProto) -> onnx.ModelProto:
     """Convert node inputs of `Slice` nodes from int64 to int32, casting the out of range values.
 
